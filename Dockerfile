@@ -1,12 +1,15 @@
 FROM golang:1.24-alpine AS build
 
+ARG TARGETOS
+ARG TARGETARCH
+
 WORKDIR /src
 
 COPY go.mod ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/porter .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags "-s -w" -o /out/porter .
 
 FROM alpine:3.20
 
@@ -22,5 +25,4 @@ ENV PORTER_DATA_DIR=/config
 EXPOSE 9876
 VOLUME ["/config"]
 
-USER porter
 ENTRYPOINT ["/app/porter"]
