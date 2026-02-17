@@ -1,0 +1,227 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Space+Mono&display=swap");
+
+:root {
+  color-scheme: light;
+  --bg: #f7f5f0;
+  --panel: #ffffff;
+  --ink: #1f1f1f;
+  --muted: #6d6b66;
+  --accent: #ff8a3d;
+  --accent-dark: #d96a24;
+  --line: rgba(0, 0, 0, 0.08);
+  --shadow: 0 20px 45px rgba(17, 17, 17, 0.15);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: radial-gradient(circle at top, #fff6ea 0%, #f7f5f0 55%, #f2efe8 100%);
+}
+
+.orb {
+  position: fixed;
+  inset: -20% auto auto -10%;
+  width: 420px;
+  height: 420px;
+  background: radial-gradient(circle, rgba(255, 138, 61, 0.35), transparent 70%);
+  filter: blur(0px);
+  z-index: -1;
+}
+
+.shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 56px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.hero {
+  background: var(--panel);
+  border-radius: 28px;
+  padding: 36px 40px;
+  box-shadow: var(--shadow);
+  position: relative;
+  overflow: hidden;
+}
+
+.hero::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 160px;
+  height: 100%;
+  background: linear-gradient(180deg, rgba(255, 138, 61, 0.18), transparent);
+}
+
+.badge {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 138, 61, 0.18);
+  color: var(--accent-dark);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-size: 0.82rem;
+}
+
+h1 {
+  margin: 14px 0 8px;
+  font-size: clamp(2.4rem, 4vw, 3.4rem);
+  letter-spacing: -0.02em;
+}
+
+p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.panel {
+  background: var(--panel);
+  border-radius: 24px;
+  padding: 28px 32px;
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 35px rgba(17, 17, 17, 0.08);
+}
+
+.panel-header {
+  margin-bottom: 16px;
+}
+
+.panel-header h2 {
+  margin: 0 0 6px;
+  font-size: 1.4rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  align-items: end;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+input,
+select,
+button {
+  font-family: inherit;
+}
+
+input,
+select {
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  padding: 12px 14px;
+  font-size: 0.95rem;
+  color: var(--ink);
+  background: #fff;
+}
+
+.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+button.primary {
+  border: none;
+  padding: 12px 18px;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 12px 24px rgba(255, 138, 61, 0.25);
+}
+
+button.primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(255, 138, 61, 0.3);
+}
+
+.rule-list {
+  display: grid;
+  gap: 16px;
+}
+
+.rule-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 18px;
+  display: grid;
+  grid-template-columns: 1.2fr 1fr auto;
+  gap: 16px;
+  align-items: center;
+  background: #fff;
+}
+
+.rule-card h3 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+}
+
+.rule-meta {
+  font-family: "Space Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.rule-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.rule-actions button {
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.rule-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.status {
+  min-height: 24px;
+  color: var(--accent-dark);
+  font-weight: 500;
+}
+
+.hidden {
+  display: none;
+}
+
+@media (max-width: 840px) {
+  .rule-card {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+  .rule-actions {
+    justify-content: flex-start;
+  }
+}

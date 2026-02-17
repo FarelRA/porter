@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Porter</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="orb"></div>
+    <main class="shell">
+      <header class="hero">
+        <div class="badge">TCP/UDP Forwarder</div>
+        <h1>Porter</h1>
+        <p>
+          Map host ports to container or hostname targets. Changes apply
+          instantly without restarting your workloads.
+        </p>
+      </header>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Create Rule</h2>
+          <p>Listen on the host, forward to a container or host.</p>
+        </div>
+        <form id="ruleForm" class="form-grid">
+          <label>
+            Rule name
+            <input name="name" type="text" placeholder="umbrel-jellyfin" />
+          </label>
+          <label>
+            Protocol
+            <select name="protocol">
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          </label>
+          <label>
+            Listen host
+            <input name="listen_host" type="text" value="0.0.0.0" />
+          </label>
+          <label>
+            Listen port
+            <input name="listen_port" type="number" min="1" max="65535" required />
+          </label>
+          <label>
+            Target type
+            <select name="target_type" id="targetType">
+              <option value="container">Container</option>
+              <option value="host">Host/Hostname</option>
+            </select>
+          </label>
+          <label class="target-container">
+            Container name
+            <input name="target_container" type="text" placeholder="umbrel" />
+          </label>
+          <label class="target-host hidden">
+            Target host
+            <input name="target_host" type="text" placeholder="192.168.1.50" />
+          </label>
+          <label>
+            Target port
+            <input name="target_port" type="number" min="1" max="65535" required />
+          </label>
+          <label class="target-network">
+            Container network (optional)
+            <input name="target_network" type="text" placeholder="router" />
+          </label>
+          <label class="checkbox">
+            <input name="enabled" type="checkbox" checked />
+            Enabled
+          </label>
+          <button type="submit" class="primary">Add rule</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Active Rules</h2>
+          <p>Toggle, edit, or remove live forwards.</p>
+        </div>
+        <div id="rules" class="rule-list"></div>
+      </section>
+
+      <div id="status" class="status" role="status"></div>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

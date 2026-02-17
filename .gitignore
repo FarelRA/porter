@@ -1,0 +1,6 @@
+/porter
+/data/
+/config/
+*.log
+*.swp
+.DS_Store
