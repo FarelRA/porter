@@ -17,7 +17,6 @@ RUN adduser -D -h /app porter
 WORKDIR /app
 
 COPY --from=build /out/porter /app/porter
-COPY web /app/web
 
 ENV PORTER_HTTP_ADDR=:9876
 ENV PORTER_DATA_DIR=/config

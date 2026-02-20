@@ -18,7 +18,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unicode"
+
+	"os/signal"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
@@ -53,6 +57,7 @@ type Config struct {
 
 type Manager struct {
 	mu       sync.Mutex
+	applyMu  sync.Mutex
 	cfg      Config
 	runners  map[string]Runner
 	resolver *DockerResolver
@@ -76,39 +81,93 @@ func (m *Manager) Config() Config {
 }
 
 func (m *Manager) ApplyConfig(cfg Config) error {
+	// Serialize ApplyConfig calls to avoid concurrent map iteration/writes.
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+
+	// ApplyConfig is designed to avoid global restarts. It computes which runners
+	// need to stop/start based on rule changes and enabled state.
 	m.mu.Lock()
 	prevCfg := m.cfg
-	prevRunners := m.runners
+	prevRunners := make(map[string]Runner, len(m.runners))
+	for k, v := range m.runners {
+		prevRunners[k] = v
+	}
+	// Keep existing runners map; we will mutate it incrementally.
+	if m.runners == nil {
+		m.runners = map[string]Runner{}
+	}
 	m.cfg = cfg
-	m.runners = map[string]Runner{}
 	m.mu.Unlock()
 
-	for _, runner := range prevRunners {
+	prevByID := map[string]Rule{}
+	for _, r := range prevCfg.Rules {
+		prevByID[r.ID] = r
+	}
+
+	nextByID := map[string]Rule{}
+	for _, r := range cfg.Rules {
+		nextByID[r.ID] = r
+	}
+
+	toStop := map[string]Runner{}
+	toStart := []Rule{}
+
+	// Decide which existing runners to stop.
+	for id, runner := range prevRunners {
+		prevRule, prevOk := prevByID[id]
+		nextRule, nextOk := nextByID[id]
+		switch {
+		case !nextOk:
+			toStop[id] = runner
+		case !nextRule.Enabled:
+			toStop[id] = runner
+		case prevOk && !rulesEqualForRunner(prevRule, nextRule):
+			toStop[id] = runner
+		}
+	}
+
+	// Decide which rules need a runner started.
+	for _, rule := range cfg.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		prevRule, hadPrev := prevByID[rule.ID]
+		_, hadRunner := prevRunners[rule.ID]
+		needsStart := !hadRunner || (hadPrev && !rulesEqualForRunner(prevRule, rule))
+		if needsStart {
+			toStart = append(toStart, rule)
+		}
+	}
+
+	// Stop runners (remove from live map before stopping).
+	for id, runner := range toStop {
+		m.mu.Lock()
+		if cur, ok := m.runners[id]; ok && cur == runner {
+			delete(m.runners, id)
+		}
+		m.mu.Unlock()
 		_ = runner.Stop()
 	}
 
-	err := m.startEnabled(cfg)
-	if err == nil {
-		return nil
+	var errs []string
+	for _, rule := range toStart {
+		if err := m.startRule(rule); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", rule.ID, err))
+		}
 	}
-
-	for _, runner := range m.runners {
-		_ = runner.Stop()
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
 	}
-
-	m.mu.Lock()
-	m.cfg = prevCfg
-	m.runners = map[string]Runner{}
-	m.mu.Unlock()
-	_ = m.startEnabled(prevCfg)
-
-	return err
+	return nil
 }
 
 func (m *Manager) UpsertRule(rule Rule) (Config, error) {
 	m.mu.Lock()
-	cfg := m.cfg
+	rules := append([]Rule(nil), m.cfg.Rules...)
 	m.mu.Unlock()
+
+	cfg := Config{Rules: rules}
 
 	updated := false
 	for i := range cfg.Rules {
@@ -132,8 +191,10 @@ func (m *Manager) UpsertRule(rule Rule) (Config, error) {
 
 func (m *Manager) DeleteRule(id string) (Config, error) {
 	m.mu.Lock()
-	cfg := m.cfg
+	rules := append([]Rule(nil), m.cfg.Rules...)
 	m.mu.Unlock()
+
+	cfg := Config{Rules: rules}
 
 	filtered := make([]Rule, 0, len(cfg.Rules))
 	for _, rule := range cfg.Rules {
@@ -236,6 +297,8 @@ type tcpRunner struct {
 	stop    chan struct{}
 	wg      sync.WaitGroup
 	resolve func() (string, error)
+	mu      sync.Mutex
+	conns   map[net.Conn]struct{}
 }
 
 func newTCPRunner(addr string, resolve func() (string, error)) (*tcpRunner, error) {
@@ -248,6 +311,7 @@ func newTCPRunner(addr string, resolve func() (string, error)) (*tcpRunner, erro
 		ln:      ln,
 		stop:    make(chan struct{}),
 		resolve: resolve,
+		conns:   map[net.Conn]struct{}{},
 	}
 
 	runner.wg.Add(1)
@@ -274,7 +338,15 @@ func (r *tcpRunner) serve() {
 		r.wg.Add(1)
 		go func(c net.Conn) {
 			defer r.wg.Done()
-			defer c.Close()
+			r.mu.Lock()
+			r.conns[c] = struct{}{}
+			r.mu.Unlock()
+			defer func() {
+				r.mu.Lock()
+				delete(r.conns, c)
+				r.mu.Unlock()
+				_ = c.Close()
+			}()
 
 			target, err := r.resolve()
 			if err != nil {
@@ -289,14 +361,21 @@ func (r *tcpRunner) serve() {
 			}
 			defer upstream.Close()
 
-			done := make(chan struct{})
+			// Ensure Stop() can reliably terminate active connections.
+			// When one direction finishes, force the other to unblock.
+			copyDone := make(chan struct{}, 2)
 			go func() {
 				_, _ = io.Copy(upstream, c)
-				close(done)
+				copyDone <- struct{}{}
 			}()
-
-			_, _ = io.Copy(c, upstream)
-			<-done
+			go func() {
+				_, _ = io.Copy(c, upstream)
+				copyDone <- struct{}{}
+			}()
+			<-copyDone
+			_ = setConnDeadlineNow(c)
+			_ = setConnDeadlineNow(upstream)
+			<-copyDone
 		}(conn)
 	}
 }
@@ -309,6 +388,13 @@ func (r *tcpRunner) Stop() error {
 	}
 
 	err := r.ln.Close()
+
+	r.mu.Lock()
+	for c := range r.conns {
+		_ = c.Close()
+	}
+	r.mu.Unlock()
+
 	r.wg.Wait()
 	return err
 }
@@ -393,12 +479,14 @@ func (r *udpRunner) serve() {
 			continue
 		}
 
-		clientKey := addr.String()
+		clientKey := addr.String() + "|" + targetAddr.String()
 		client := r.getClient(clientKey, targetAddr, addr)
 		if client == nil || client.conn == nil {
 			continue
 		}
+		r.mu.Lock()
 		client.lastSeen = time.Now()
+		r.mu.Unlock()
 
 		if _, err := client.conn.Write(buf[:n]); err != nil {
 			log.Printf("udp write error: %v", err)
@@ -428,8 +516,17 @@ func (r *udpRunner) getClient(key string, targetAddr *net.UDPAddr, clientAddr *n
 		defer r.wg.Done()
 		buf := make([]byte, 65535)
 		for {
+			_ = upstream.SetReadDeadline(time.Now().Add(1 * time.Second))
 			n, err := upstream.Read(buf)
 			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					select {
+					case <-r.stop:
+						return
+					default:
+						continue
+					}
+				}
 				return
 			}
 			_, _ = r.conn.WriteToUDP(buf[:n], clientAddr)
@@ -531,7 +628,7 @@ func (d *DockerResolver) inspectContainer(ctx context.Context, name string) (typ
 
 	containers, listErr := d.cli.ContainerList(ctx, types.ContainerListOptions{All: true})
 	if listErr != nil {
-		return types.ContainerJSON{}, err
+		return types.ContainerJSON{}, listErr
 	}
 
 	for _, c := range containers {
@@ -552,23 +649,44 @@ type APIServer struct {
 	configPath string
 	manager    *Manager
 	files      http.Handler
+	apiToken   string
 }
 
-func NewAPIServer(configPath string, manager *Manager) *APIServer {
-	webRoot, _ := fs.Sub(embeddedWeb, "web")
+// apiToken can be empty to disable auth.
+func NewAPIServer(configPath string, manager *Manager, apiToken string) *APIServer {
+	webRoot, err := fs.Sub(embeddedWeb, "web")
+	if err != nil {
+		// Fail closed with a clear message instead of silently serving nothing.
+		log.Printf("embedded web unavailable: %v", err)
+		webRoot = os.DirFS(".")
+	}
 	return &APIServer{
 		configPath: configPath,
 		manager:    manager,
 		files:      http.FileServer(http.FS(webRoot)),
+		apiToken:   apiToken,
 	}
 }
 
 func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	applySecurityHeaders(w)
 	if strings.HasPrefix(r.URL.Path, "/api/") {
+		if !s.authorize(r) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		s.handleAPI(w, r)
 		return
 	}
 	s.files.ServeHTTP(w, r)
+}
+
+func (s *APIServer) authorize(r *http.Request) bool {
+	if s.apiToken == "" {
+		return true
+	}
+	auth := r.Header.Get("Authorization")
+	return auth == "Bearer "+s.apiToken
 }
 
 func (s *APIServer) handleAPI(w http.ResponseWriter, r *http.Request) {
@@ -633,6 +751,10 @@ func (s *APIServer) handleRule(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/rules/")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing rule id")
+		return
+	}
+	if !isValidRuleID(id) {
+		writeError(w, http.StatusBadRequest, "invalid rule id")
 		return
 	}
 
@@ -702,11 +824,48 @@ func normalizeRule(rule Rule) (Rule, error) {
 	if rule.ID == "" {
 		rule.ID = newID()
 	}
+	if !isValidRuleID(rule.ID) {
+		return Rule{}, errors.New("invalid rule id")
+	}
 	if rule.Name == "" {
 		rule.Name = rule.ID
 	}
 
 	return rule, nil
+}
+
+func isValidRuleID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		if r == '/' || r == '\\' {
+			return false
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		switch r {
+		case '-', '_', '.':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func rulesEqualForRunner(a, b Rule) bool {
+	// Fields that influence listener binding or upstream resolution.
+	return a.Protocol == b.Protocol &&
+		a.ListenHost == b.ListenHost &&
+		a.ListenPort == b.ListenPort &&
+		a.TargetType == b.TargetType &&
+		a.TargetHost == b.TargetHost &&
+		a.TargetContainer == b.TargetContainer &&
+		a.TargetNetwork == b.TargetNetwork &&
+		a.TargetPort == b.TargetPort
 }
 
 func newID() string {
@@ -765,6 +924,12 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
+func applySecurityHeaders(w http.ResponseWriter) {
+	// Minimal hardening for the embedded UI and JSON API.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
 func envOrDefault(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -772,10 +937,16 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
+func setConnDeadlineNow(c net.Conn) error {
+	// Used to unblock io.Copy when one side completes.
+	return c.SetDeadline(time.Now())
+}
+
 func main() {
 	httpAddr := envOrDefault("PORTER_HTTP_ADDR", defaultHTTPAddr)
 	dataDir := envOrDefault("PORTER_DATA_DIR", defaultDataDir)
 	configPath := envOrDefault("PORTER_CONFIG_PATH", filepath.Join(dataDir, configFileName))
+	apiToken := strings.TrimSpace(os.Getenv("PORTER_API_TOKEN"))
 
 	var resolver *DockerResolver
 	if dockerResolver, err := NewDockerResolver(); err != nil {
@@ -797,10 +968,33 @@ func main() {
 		log.Printf("failed to apply config: %v", err)
 	}
 
-	server := NewAPIServer(configPath, manager)
+	h := NewAPIServer(configPath, manager, apiToken)
 
-	log.Printf("porter listening on %s", httpAddr)
-	if err := http.ListenAndServe(httpAddr, server); err != nil {
-		log.Fatalf("server error: %v", err)
+	httpServer := &http.Server{
+		Addr:              httpAddr,
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		log.Printf("porter listening on %s", httpAddr)
+		if apiToken != "" {
+			log.Printf("api auth enabled")
+		}
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = httpServer.Shutdown(shutdownCtx)
+	_ = manager.ApplyConfig(Config{Rules: []Rule{}})
 }

@@ -4,87 +4,348 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Porter</title>
-    <link rel="stylesheet" href="styles.css" />
+    <script>
+      // Tailwind: auto dark/light based on OS/browser preference.
+      window.tailwind = { config: { darkMode: "media" } };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
   </head>
-  <body>
-    <div class="orb"></div>
-    <main class="shell">
-      <header class="hero">
-        <div class="badge">TCP/UDP Forwarder</div>
-        <h1>Porter</h1>
-        <p>
-          Map host ports to container or hostname targets. Changes apply
-          instantly without restarting your workloads.
+  <body class="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+    <div class="pointer-events-none fixed inset-0 overflow-hidden">
+      <div class="absolute -top-24 -left-24 h-80 w-80 rounded-full bg-amber-300/50 blur-3xl dark:bg-amber-500/20"></div>
+      <div class="absolute -bottom-28 -right-24 h-96 w-96 rounded-full bg-sky-300/40 blur-3xl dark:bg-sky-500/20"></div>
+    </div>
+
+    <main class="relative mx-auto max-w-5xl px-4 py-10" x-data="porterApp()" x-init="init()">
+      <header class="mb-10">
+        <h1 class="mt-4 text-4xl font-semibold tracking-tight">Porter</h1>
+        <p class="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
+          Map host ports to container or hostname targets. Changes apply instantly.
+          <span class="font-medium">If API auth is enabled</span>, you will be prompted for the token on unauthorized requests.
         </p>
       </header>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Create Rule</h2>
-          <p>Listen on the host, forward to a container or host.</p>
+      <section class="grid gap-6 lg:grid-cols-2">
+        <div class="rounded-2xl border border-zinc-200 bg-white/70 p-6 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/40">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <h2 class="text-lg font-semibold">Create Rule</h2>
+              <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Listen on the host, forward to a container or host.</p>
+            </div>
+          </div>
+
+          <form class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2" @submit.prevent="submitRule()">
+            <label class="sm:col-span-2">
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Rule name</span>
+              <input x-model.trim="form.name" type="text" placeholder="umbrel-jellyfin" class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950" />
+            </label>
+
+            <label>
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Protocol</span>
+              <select x-model="form.protocol" class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950">
+                <option value="tcp">TCP</option>
+                <option value="udp">UDP</option>
+              </select>
+            </label>
+
+            <label>
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Listen port</span>
+              <input x-model.number="form.listen_port" type="number" min="1" max="65535" required class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950" />
+            </label>
+
+            <label>
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Listen host</span>
+              <input x-model.trim="form.listen_host" type="text" class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950" />
+            </label>
+
+            <label>
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Target type</span>
+              <select x-model="form.target_type" class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950">
+                <option value="container">Container</option>
+                <option value="host">Host/Hostname</option>
+              </select>
+            </label>
+
+            <label x-show="form.target_type === 'container'" x-cloak class="sm:col-span-2">
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Container name</span>
+              <input x-model.trim="form.target_container" type="text" placeholder="umbrel" class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950" />
+            </label>
+
+            <label x-show="form.target_type === 'host'" x-cloak class="sm:col-span-2">
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Target host</span>
+              <input x-model.trim="form.target_host" type="text" placeholder="192.168.1.50" class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950" />
+            </label>
+
+            <label>
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Target port</span>
+              <input x-model.number="form.target_port" type="number" min="1" max="65535" required class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950" />
+            </label>
+
+            <label>
+              <span class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Container network</span>
+              <input
+                x-model.trim="form.target_network"
+                type="text"
+                placeholder="router"
+                :disabled="form.target_type !== 'container'"
+                class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:disabled:bg-zinc-900 dark:disabled:text-zinc-400"
+              />
+            </label>
+
+            <button type="submit" class="sm:col-span-2 inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
+              Add rule
+            </button>
+          </form>
         </div>
-        <form id="ruleForm" class="form-grid">
-          <label>
-            Rule name
-            <input name="name" type="text" placeholder="umbrel-jellyfin" />
-          </label>
-          <label>
-            Protocol
-            <select name="protocol">
-              <option value="tcp">TCP</option>
-              <option value="udp">UDP</option>
-            </select>
-          </label>
-          <label>
-            Listen host
-            <input name="listen_host" type="text" value="0.0.0.0" />
-          </label>
-          <label>
-            Listen port
-            <input name="listen_port" type="number" min="1" max="65535" required />
-          </label>
-          <label>
-            Target type
-            <select name="target_type" id="targetType">
-              <option value="container">Container</option>
-              <option value="host">Host/Hostname</option>
-            </select>
-          </label>
-          <label class="target-container">
-            Container name
-            <input name="target_container" type="text" placeholder="umbrel" />
-          </label>
-          <label class="target-host hidden">
-            Target host
-            <input name="target_host" type="text" placeholder="192.168.1.50" />
-          </label>
-          <label>
-            Target port
-            <input name="target_port" type="number" min="1" max="65535" required />
-          </label>
-          <label class="target-network">
-            Container network (optional)
-            <input name="target_network" type="text" placeholder="router" />
-          </label>
-          <label class="checkbox">
-            <input name="enabled" type="checkbox" checked />
-            Enabled
-          </label>
-          <button type="submit" class="primary">Add rule</button>
-        </form>
+
+        <div class="rounded-2xl border border-zinc-200 bg-white/70 p-6 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/40">
+          <div>
+            <h2 class="text-lg font-semibold">Active Rules</h2>
+            <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Toggle or remove live forwards.</p>
+          </div>
+
+          <div class="mt-5 space-y-3">
+            <template x-if="rules.length === 0">
+              <p class="text-sm text-zinc-600 dark:text-zinc-300">No rules yet. Add one to start forwarding.</p>
+            </template>
+
+            <template x-for="rule in rules" :key="rule.id">
+              <div class="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                <div class="flex items-start justify-between gap-4">
+                  <div>
+                    <div class="text-sm font-semibold" x-text="rule.name"></div>
+                    <div class="mt-1 text-xs text-zinc-600 dark:text-zinc-300" x-text="formatRuleMeta(rule)"></div>
+                    <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">ID: <span x-text="rule.id"></span></div>
+                  </div>
+                  <div class="text-xs font-medium" :class="rule.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500 dark:text-zinc-400'" x-text="rule.enabled ? 'Enabled' : 'Disabled'"></div>
+                </div>
+
+                <div class="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    class="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900"
+                    @click="toggleRule(rule)"
+                    x-text="rule.enabled ? 'Disable' : 'Enable'"
+                  ></button>
+                  <button
+                    type="button"
+                    class="rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/50 dark:bg-zinc-950 dark:text-red-300 dark:hover:bg-red-950/30"
+                    @click="deleteRule(rule.id)"
+                  >Delete</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
       </section>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Active Rules</h2>
-          <p>Toggle, edit, or remove live forwards.</p>
-        </div>
-        <div id="rules" class="rule-list"></div>
-      </section>
-
-      <div id="status" class="status" role="status"></div>
+      <div class="mt-8 text-sm" role="status" aria-live="polite">
+        <div x-show="status.message" x-cloak class="rounded-xl border px-4 py-3" :class="status.isError ? 'border-red-200 bg-red-50 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200' : 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200'" x-text="status.message"></div>
+      </div>
     </main>
 
-    <script src="app.js"></script>
+    <!-- API token dialog (only place with input) -->
+    <div
+      x-data
+      x-show="$root.showTokenDialog"
+      x-cloak
+      class="fixed inset-0 z-50"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="absolute inset-0 bg-black/40" @click="$root.closeTokenDialog()"></div>
+      <div class="relative mx-auto mt-24 w-[92%] max-w-lg rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <div class="text-sm font-semibold">API token</div>
+            <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+              If the server is configured with <span class="font-mono text-xs">PORTER_API_TOKEN</span>, enter it here.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="rounded-lg px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
+            @click="$root.closeTokenDialog()"
+            aria-label="Close"
+          >
+            x
+          </button>
+        </div>
+
+        <div class="mt-4">
+          <label class="text-xs font-medium text-zinc-700 dark:text-zinc-200">Token</label>
+          <input
+            x-model.trim="$root.token"
+            type="password"
+            placeholder="PORTER_API_TOKEN"
+            autocomplete="off"
+            class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950"
+          />
+          <p class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">Used as `Authorization: Bearer &lt;token&gt;`.</p>
+        </div>
+
+        <div class="mt-4 flex justify-end">
+          <button
+            type="button"
+            class="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+            @click="$root.saveTokenAndClose()"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function porterApp() {
+        return {
+          token: "",
+          rules: [],
+          status: { message: "", isError: false },
+          showTokenDialog: false,
+          form: {
+            name: "",
+            protocol: "tcp",
+            listen_host: "0.0.0.0",
+            listen_port: null,
+            target_type: "container",
+            target_container: "",
+            target_host: "",
+            target_network: "",
+            target_port: null,
+            enabled: true,
+          },
+          init() {
+            const saved = window.localStorage.getItem("porter_api_token") || "";
+            this.token = saved;
+            this.loadConfig();
+          },
+          openTokenDialog() {
+            this.showTokenDialog = true;
+          },
+          closeTokenDialog() {
+            this.showTokenDialog = false;
+          },
+          saveTokenAndClose() {
+            window.localStorage.setItem("porter_api_token", this.token || "");
+            this.showTokenDialog = false;
+          },
+          apiHeaders() {
+            const headers = { "Content-Type": "application/json" };
+            if (this.token) headers["Authorization"] = "Bearer " + this.token;
+            return headers;
+          },
+          setStatus(message, isError = false) {
+            this.status.message = message;
+            this.status.isError = isError;
+            if (!message) return;
+            window.clearTimeout(this._statusTimer);
+            this._statusTimer = window.setTimeout(() => {
+              this.status.message = "";
+              this.status.isError = false;
+            }, 4000);
+          },
+          formatRuleMeta(rule) {
+            const listen = `${rule.listen_host}:${rule.listen_port}`;
+            const target =
+              rule.target_type === "container"
+                ? `${rule.target_container}:${rule.target_port}`
+                : `${rule.target_host}:${rule.target_port}`;
+            const network = rule.target_network ? ` (${rule.target_network})` : "";
+            return `${rule.protocol.toUpperCase()} ${listen} -> ${target}${network}`;
+          },
+          async loadConfig() {
+            try {
+              const res = await fetch("/api/config", { headers: this.apiHeaders() });
+              const data = await res.json();
+              if (!res.ok) {
+                if (res.status === 401) {
+                  this.openTokenDialog();
+                  throw new Error(data.error || "Unauthorized");
+                }
+                throw new Error(data.error || "Failed to load config");
+              }
+              this.rules = data.rules || [];
+            } catch (err) {
+              this.setStatus(err.message, true);
+            }
+          },
+          async upsertRule(rule) {
+            const res = await fetch("/api/rules", {
+              method: "POST",
+              headers: this.apiHeaders(),
+              body: JSON.stringify(rule),
+            });
+            const payload = await res.json();
+            if (!res.ok) {
+              if (res.status === 401) {
+                this.openTokenDialog();
+                throw new Error(payload.error || "Unauthorized");
+              }
+              throw new Error(payload.error || "Failed to save rule");
+            }
+            return payload;
+          },
+          async submitRule() {
+            try {
+              const rule = {
+                name: (this.form.name || "").trim(),
+                protocol: this.form.protocol || "tcp",
+                listen_host: (this.form.listen_host || "0.0.0.0").trim(),
+                listen_port: Number(this.form.listen_port),
+                target_type: this.form.target_type,
+                target_container: this.form.target_type === "container" ? (this.form.target_container || "").trim() : "",
+                target_host: this.form.target_type === "host" ? (this.form.target_host || "").trim() : "",
+                target_network: (this.form.target_network || "").trim(),
+                target_port: Number(this.form.target_port),
+                enabled: true,
+              };
+              await this.upsertRule(rule);
+              await this.loadConfig();
+              this.form.name = "";
+              this.form.protocol = "tcp";
+              this.form.listen_host = "0.0.0.0";
+              this.form.listen_port = null;
+              this.form.target_type = "container";
+              this.form.target_container = "";
+              this.form.target_host = "";
+              this.form.target_network = "";
+              this.form.target_port = null;
+              this.setStatus("Rule saved.");
+            } catch (err) {
+              this.setStatus(err.message, true);
+            }
+          },
+          async toggleRule(rule) {
+            try {
+              const updated = { ...rule, enabled: !rule.enabled };
+              await this.upsertRule(updated);
+              await this.loadConfig();
+              this.setStatus("Rule updated.");
+            } catch (err) {
+              this.setStatus(err.message, true);
+            }
+          },
+          async deleteRule(id) {
+            try {
+              const res = await fetch(`/api/rules/${id}`, { method: "DELETE", headers: this.apiHeaders() });
+              const payload = await res.json();
+              if (!res.ok) {
+                if (res.status === 401) {
+                  this.openTokenDialog();
+                  throw new Error(payload.error || "Unauthorized");
+                }
+                throw new Error(payload.error || "Failed to delete rule");
+              }
+              await this.loadConfig();
+              this.setStatus("Rule deleted.");
+            } catch (err) {
+              this.setStatus(err.message, true);
+            }
+          },
+        };
+      }
+    </script>
   </body>
 </html>
