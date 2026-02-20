@@ -805,7 +805,6 @@ func (s *APIServer) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	envToken := s.envToken
 	s.tokenMu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enforced":     true,
 		"configured":   configured,
 		"can_register": !configured && !envToken,
 	})
@@ -1165,7 +1164,6 @@ func main() {
 
 	go func() {
 		log.Printf("porter listening on %s", httpAddr)
-		log.Printf("api auth enforced")
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
