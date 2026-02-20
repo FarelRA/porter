@@ -25,6 +25,7 @@ import (
 	"os/signal"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -626,7 +627,7 @@ func (d *DockerResolver) inspectContainer(ctx context.Context, name string) (typ
 		return inspect, nil
 	}
 
-	containers, listErr := d.cli.ContainerList(ctx, types.ContainerListOptions{All: true})
+	containers, listErr := d.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if listErr != nil {
 		return types.ContainerJSON{}, listErr
 	}
