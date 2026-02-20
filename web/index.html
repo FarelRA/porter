@@ -160,7 +160,7 @@
           <div>
             <div class="text-sm font-semibold">API token</div>
             <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-              If the server is configured with <span class="font-mono text-xs">PORTER_API_TOKEN</span>, enter it here.
+              Authentication is required. If no token is configured on the server yet, you can register one here.
             </p>
           </div>
           <button
@@ -191,7 +191,7 @@
             class="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
             @click="$root.saveTokenAndClose()"
           >
-            Save
+            <span x-text="$root.auth.can_register ? 'Register' : 'Save'"></span>
           </button>
         </div>
       </div>
@@ -204,6 +204,7 @@
           rules: [],
           status: { message: "", isError: false },
           showTokenDialog: false,
+          auth: { enforced: true, configured: false, can_register: false },
           form: {
             name: "",
             protocol: "tcp",
@@ -219,6 +220,35 @@
           init() {
             const saved = window.localStorage.getItem("porter_api_token") || "";
             this.token = saved;
+			this.bootstrap();
+          },
+          async bootstrap() {
+            try {
+              const res = await fetch("/api/auth/status");
+              const data = await res.json();
+              if (res.ok) {
+                this.auth = {
+                  enforced: Boolean(data.enforced),
+                  configured: Boolean(data.configured),
+                  can_register: Boolean(data.can_register),
+                };
+              }
+            } catch (_) {
+              // Ignore bootstrap failures; API calls will surface errors.
+            }
+
+            // Always prompt if token missing in browser storage.
+            if (!this.token) {
+              this.openTokenDialog();
+              return;
+            }
+
+            // If the server needs initial registration, prompt regardless.
+            if (this.auth.can_register) {
+              this.openTokenDialog();
+              return;
+            }
+
             this.loadConfig();
           },
           openTokenDialog() {
@@ -227,9 +257,38 @@
           closeTokenDialog() {
             this.showTokenDialog = false;
           },
-          saveTokenAndClose() {
-            window.localStorage.setItem("porter_api_token", this.token || "");
+          async saveTokenAndClose() {
+            const token = (this.token || "").trim();
+            if (!token) {
+              this.setStatus("Token is required.", true);
+              this.openTokenDialog();
+              return;
+            }
+
+            if (this.auth.can_register) {
+              try {
+                const res = await fetch("/api/auth/register", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ token }),
+                });
+                const payload = await res.json();
+                if (!res.ok) {
+                  throw new Error(payload.error || "Failed to register token");
+                }
+                this.auth.configured = true;
+                this.auth.can_register = false;
+              } catch (err) {
+                this.setStatus(err.message, true);
+                this.openTokenDialog();
+                return;
+              }
+            }
+
+            window.localStorage.setItem("porter_api_token", token);
+            this.token = token;
             this.showTokenDialog = false;
+            this.loadConfig();
           },
           apiHeaders() {
             const headers = { "Content-Type": "application/json" };
