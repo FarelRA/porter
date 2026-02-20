@@ -23,6 +23,10 @@
     </div>
 
     <main class="relative mx-auto max-w-5xl px-4 py-10" x-data="porterApp()" x-init="init()">
+      <div class="mb-6 text-sm" role="status" aria-live="polite">
+        <div x-show="status.message" x-cloak class="rounded-xl border px-4 py-3" :class="status.isError ? 'border-red-200 bg-red-50 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200' : 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200'" x-text="status.message"></div>
+      </div>
+
       <header class="mb-10">
         <h1 class="mt-4 text-4xl font-semibold tracking-tight">Porter</h1>
         <p class="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
@@ -175,7 +179,6 @@
               autocomplete="off"
               class="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950"
             />
-            <p class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">Used as `Authorization: Bearer &lt;token&gt;`.</p>
           </div>
 
           <div class="mt-4 flex justify-end">
@@ -190,9 +193,6 @@
         </div>
       </div>
 
-      <div class="mt-8 text-sm" role="status" aria-live="polite">
-        <div x-show="status.message" x-cloak class="rounded-xl border px-4 py-3" :class="status.isError ? 'border-red-200 bg-red-50 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200' : 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200'" x-text="status.message"></div>
-      </div>
     </main>
 
     <script>

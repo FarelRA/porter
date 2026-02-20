@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,6 +120,7 @@ func (m *Manager) Config() Config {
 
 	copied := make([]Rule, len(m.cfg.Rules))
 	copy(copied, m.cfg.Rules)
+	sortRulesByName(copied)
 	return Config{Rules: copied}
 }
 
@@ -126,6 +128,9 @@ func (m *Manager) ApplyConfig(cfg Config) error {
 	// Serialize ApplyConfig calls to avoid concurrent map iteration/writes.
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
+
+	// Ensure stable ordering for persistence and UI.
+	sortRulesByName(cfg.Rules)
 
 	// ApplyConfig is designed to avoid global restarts. It computes which runners
 	// need to stop/start based on rule changes and enabled state.
@@ -223,6 +228,7 @@ func (m *Manager) UpsertRule(rule Rule) (Config, error) {
 	if !updated {
 		cfg.Rules = append(cfg.Rules, rule)
 	}
+	sortRulesByName(cfg.Rules)
 
 	if err := m.ApplyConfig(cfg); err != nil {
 		return cfg, err
@@ -246,12 +252,24 @@ func (m *Manager) DeleteRule(id string) (Config, error) {
 		filtered = append(filtered, rule)
 	}
 	cfg.Rules = filtered
+	sortRulesByName(cfg.Rules)
 
 	if err := m.ApplyConfig(cfg); err != nil {
 		return cfg, err
 	}
 
 	return cfg, nil
+}
+
+func sortRulesByName(rules []Rule) {
+	sort.SliceStable(rules, func(i, j int) bool {
+		ai := strings.ToLower(strings.TrimSpace(rules[i].Name))
+		aj := strings.ToLower(strings.TrimSpace(rules[j].Name))
+		if ai == aj {
+			return rules[i].ID < rules[j].ID
+		}
+		return ai < aj
+	})
 }
 
 func (m *Manager) startEnabled(cfg Config) error {
