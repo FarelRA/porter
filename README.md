@@ -73,13 +73,21 @@ Notes:
 
 ## API authentication
 
-If `PORTER_API_TOKEN` is set, all `/api/*` endpoints require:
+Authentication is enforced for all `/api/*` endpoints.
+
+Token sources (highest priority first):
+- `PORTER_API_TOKEN` environment variable
+- `api_token` in the on-disk config (`porter.json`)
+
+When a token is configured, requests must include:
 
 ```text
 Authorization: Bearer <token>
 ```
 
-The UI will prompt for the token when it receives `401 Unauthorized`.
+If no token is configured (no env var and no `api_token`), the UI will prompt you to register one.
+
+Registration is only allowed when `PORTER_API_TOKEN` is not set.
 
 ## Performance notes
 

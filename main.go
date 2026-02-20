@@ -90,6 +90,13 @@ type Config struct {
 	Rules []Rule `json:"rules"`
 }
 
+// FileConfig is the on-disk config format.
+// Keep API token here (not exposed via /api/config).
+type FileConfig struct {
+	APIToken string `json:"api_token,omitempty"`
+	Rules    []Rule `json:"rules"`
+}
+
 type Manager struct {
 	mu       sync.Mutex
 	applyMu  sync.Mutex
@@ -719,10 +726,11 @@ type APIServer struct {
 	manager    *Manager
 	files      http.Handler
 	apiToken   string
+	envToken   bool
+	tokenMu    sync.RWMutex
 }
 
-// apiToken can be empty to disable auth.
-func NewAPIServer(configPath string, manager *Manager, apiToken string) *APIServer {
+func NewAPIServer(configPath string, manager *Manager, apiToken string, envToken bool) *APIServer {
 	webRoot, err := fs.Sub(embeddedWeb, "web")
 	if err != nil {
 		// Fail closed with a clear message instead of silently serving nothing.
@@ -734,16 +742,13 @@ func NewAPIServer(configPath string, manager *Manager, apiToken string) *APIServ
 		manager:    manager,
 		files:      http.FileServer(http.FS(webRoot)),
 		apiToken:   apiToken,
+		envToken:   envToken,
 	}
 }
 
 func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	applySecurityHeaders(w)
 	if strings.HasPrefix(r.URL.Path, "/api/") {
-		if !s.authorize(r) {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
 		s.handleAPI(w, r)
 		return
 	}
@@ -751,24 +756,118 @@ func (s *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *APIServer) authorize(r *http.Request) bool {
-	if s.apiToken == "" {
-		return true
+	s.tokenMu.RLock()
+	token := s.apiToken
+	s.tokenMu.RUnlock()
+	if token == "" {
+		return false
 	}
 	auth := r.Header.Get("Authorization")
-	return auth == "Bearer "+s.apiToken
+	return auth == "Bearer "+token
 }
 
 func (s *APIServer) handleAPI(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/api/auth/status":
+		s.handleAuthStatus(w, r)
+	case r.URL.Path == "/api/auth/register":
+		s.handleAuthRegister(w, r)
 	case r.URL.Path == "/api/config":
+		if !s.authorize(r) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		s.handleConfig(w, r)
 	case r.URL.Path == "/api/rules":
+		if !s.authorize(r) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		s.handleRules(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/rules/"):
+		if !s.authorize(r) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		s.handleRule(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "unknown endpoint")
 	}
+}
+
+func (s *APIServer) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	s.tokenMu.RLock()
+	configured := s.apiToken != ""
+	envToken := s.envToken
+	s.tokenMu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enforced":     true,
+		"configured":   configured,
+		"can_register": !configured && !envToken,
+	})
+}
+
+func (s *APIServer) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Registration is only allowed if no env token is set AND no token is configured.
+	s.tokenMu.RLock()
+	envToken := s.envToken
+	configured := s.apiToken != ""
+	s.tokenMu.RUnlock()
+	if envToken {
+		writeError(w, http.StatusConflict, "token is set via environment")
+		return
+	}
+	if configured {
+		writeError(w, http.StatusConflict, "token already configured")
+		return
+	}
+
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	token := strings.TrimSpace(payload.Token)
+	if token == "" {
+		writeError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+	if len(token) < 8 {
+		writeError(w, http.StatusBadRequest, "token must be at least 8 characters")
+		return
+	}
+
+	// Persist token in config, preserving rules.
+	fc, err := loadConfig(s.configPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		fc = FileConfig{Rules: []Rule{}}
+	}
+	fc.APIToken = token
+	if err := saveConfig(s.configPath, fc); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.tokenMu.Lock()
+	s.apiToken = token
+	s.tokenMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{"configured": true})
 }
 
 func (s *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -776,6 +875,7 @@ func (s *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// Do not leak api token.
 	writeJSON(w, http.StatusOK, s.manager.Config())
 }
 
@@ -803,7 +903,10 @@ func (s *APIServer) handleRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := saveConfig(s.configPath, cfg); err != nil {
+	s.tokenMu.RLock()
+	fc := FileConfig{Rules: cfg.Rules, APIToken: s.apiToken}
+	s.tokenMu.RUnlock()
+	if err := saveConfig(s.configPath, fc); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -833,7 +936,10 @@ func (s *APIServer) handleRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := saveConfig(s.configPath, cfg); err != nil {
+	s.tokenMu.RLock()
+	fc := FileConfig{Rules: cfg.Rules, APIToken: s.apiToken}
+	s.tokenMu.RUnlock()
+	if err := saveConfig(s.configPath, fc); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -945,20 +1051,20 @@ func newID() string {
 	return hex.EncodeToString(buf)
 }
 
-func loadConfig(path string) (Config, error) {
+func loadConfig(path string) (FileConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, err
+		return FileConfig{}, err
 	}
 
-	var cfg Config
+	var cfg FileConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return Config{}, err
+		return FileConfig{}, err
 	}
 	return cfg, nil
 }
 
-func saveConfig(path string, cfg Config) error {
+func saveConfig(path string, cfg FileConfig) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -1015,7 +1121,8 @@ func main() {
 	httpAddr := envOrDefault("PORTER_HTTP_ADDR", defaultHTTPAddr)
 	dataDir := envOrDefault("PORTER_DATA_DIR", defaultDataDir)
 	configPath := envOrDefault("PORTER_CONFIG_PATH", filepath.Join(dataDir, configFileName))
-	apiToken := strings.TrimSpace(os.Getenv("PORTER_API_TOKEN"))
+	apiTokenEnv := strings.TrimSpace(os.Getenv("PORTER_API_TOKEN"))
+	envToken := apiTokenEnv != ""
 
 	var resolver *DockerResolver
 	if dockerResolver, err := NewDockerResolver(); err != nil {
@@ -1025,19 +1132,24 @@ func main() {
 	}
 
 	manager := NewManager(resolver)
-	cfg, err := loadConfig(configPath)
+	fileCfg, err := loadConfig(configPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			log.Printf("failed to load config: %v", err)
 		}
-		cfg = Config{Rules: []Rule{}}
+		fileCfg = FileConfig{Rules: []Rule{}}
 	}
 
-	if err := manager.ApplyConfig(cfg); err != nil {
+	apiToken := apiTokenEnv
+	if apiToken == "" {
+		apiToken = strings.TrimSpace(fileCfg.APIToken)
+	}
+
+	if err := manager.ApplyConfig(Config{Rules: fileCfg.Rules}); err != nil {
 		log.Printf("failed to apply config: %v", err)
 	}
 
-	h := NewAPIServer(configPath, manager, apiToken)
+	h := NewAPIServer(configPath, manager, apiToken, envToken)
 
 	httpServer := &http.Server{
 		Addr:              httpAddr,
@@ -1053,9 +1165,7 @@ func main() {
 
 	go func() {
 		log.Printf("porter listening on %s", httpAddr)
-		if apiToken != "" {
-			log.Printf("api auth enabled")
-		}
+		log.Printf("api auth enforced")
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
