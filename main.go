@@ -29,6 +29,40 @@ import (
 	"github.com/docker/docker/client"
 )
 
+var copyBufPool = sync.Pool{New: func() any {
+	// 64KiB tends to be a good compromise for tunneling.
+	b := make([]byte, 64*1024)
+	return &b
+}}
+
+func getCopyBuf() []byte {
+	return *copyBufPool.Get().(*[]byte)
+}
+
+func putCopyBuf(b []byte) {
+	// Avoid keeping huge buffers if something replaced it.
+	if cap(b) < 64*1024 {
+		return
+	}
+	b = b[:64*1024]
+	copyBufPool.Put(&b)
+}
+
+func fastCopy(dst io.Writer, src io.Reader) {
+	// Prefer zero-copy paths when available (net.TCPConn implements these).
+	if wt, ok := src.(io.WriterTo); ok {
+		_, _ = wt.WriteTo(dst)
+		return
+	}
+	if rf, ok := dst.(io.ReaderFrom); ok {
+		_, _ = rf.ReadFrom(src)
+		return
+	}
+	buf := getCopyBuf()
+	_, _ = io.CopyBuffer(dst, src, buf)
+	putCopyBuf(buf)
+}
+
 const (
 	defaultHTTPAddr = ":9876"
 	defaultDataDir  = "/config"
@@ -362,15 +396,15 @@ func (r *tcpRunner) serve() {
 			}
 			defer upstream.Close()
 
-			// Ensure Stop() can reliably terminate active connections.
+			// Tunnel with pooled buffers to reduce per-connection allocations.
 			// When one direction finishes, force the other to unblock.
 			copyDone := make(chan struct{}, 2)
 			go func() {
-				_, _ = io.Copy(upstream, c)
+				fastCopy(upstream, c)
 				copyDone <- struct{}{}
 			}()
 			go func() {
-				_, _ = io.Copy(c, upstream)
+				fastCopy(c, upstream)
 				copyDone <- struct{}{}
 			}()
 			<-copyDone
@@ -409,6 +443,13 @@ type udpRunner struct {
 	clients      map[string]*udpClient
 	idleTimeout  time.Duration
 	cleanupEvery time.Duration
+
+	// target cache to reduce per-packet ResolveUDPAddr overhead.
+	targetMu          sync.Mutex
+	cachedTarget      string
+	cachedTargetAddr  *net.UDPAddr
+	cachedTargetAt    time.Time
+	targetCacheMaxAge time.Duration
 }
 
 type udpClient struct {
@@ -428,12 +469,13 @@ func newUDPRunner(addr string, resolve func() (string, error)) (*udpRunner, erro
 	}
 
 	runner := &udpRunner{
-		conn:         conn,
-		stop:         make(chan struct{}),
-		resolve:      resolve,
-		clients:      map[string]*udpClient{},
-		idleTimeout:  2 * time.Minute,
-		cleanupEvery: 30 * time.Second,
+		conn:              conn,
+		stop:              make(chan struct{}),
+		resolve:           resolve,
+		clients:           map[string]*udpClient{},
+		idleTimeout:       2 * time.Minute,
+		cleanupEvery:      30 * time.Second,
+		targetCacheMaxAge: 2 * time.Second,
 	}
 
 	runner.wg.Add(2)
@@ -445,7 +487,8 @@ func newUDPRunner(addr string, resolve func() (string, error)) (*udpRunner, erro
 
 func (r *udpRunner) serve() {
 	defer r.wg.Done()
-	buf := make([]byte, 65535)
+	buf := getCopyBuf()
+	defer putCopyBuf(buf)
 
 	for {
 		_ = r.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -474,7 +517,7 @@ func (r *udpRunner) serve() {
 			continue
 		}
 
-		targetAddr, err := net.ResolveUDPAddr("udp", target)
+		targetAddr, err := r.resolveTargetAddr(target)
 		if err != nil {
 			log.Printf("udp target error: %v", err)
 			continue
@@ -493,6 +536,30 @@ func (r *udpRunner) serve() {
 			log.Printf("udp write error: %v", err)
 		}
 	}
+}
+
+func (r *udpRunner) resolveTargetAddr(target string) (*net.UDPAddr, error) {
+	// Target changes are expected (e.g., container IP). Cache briefly to avoid
+	// resolving on every single packet.
+	r.targetMu.Lock()
+	if r.cachedTarget == target && r.cachedTargetAddr != nil && time.Since(r.cachedTargetAt) <= r.targetCacheMaxAge {
+		addr := r.cachedTargetAddr
+		r.targetMu.Unlock()
+		return addr, nil
+	}
+	r.targetMu.Unlock()
+
+	addr, err := net.ResolveUDPAddr("udp", target)
+	if err != nil {
+		return nil, err
+	}
+
+	r.targetMu.Lock()
+	r.cachedTarget = target
+	r.cachedTargetAddr = addr
+	r.cachedTargetAt = time.Now()
+	r.targetMu.Unlock()
+	return addr, nil
 }
 
 func (r *udpRunner) getClient(key string, targetAddr *net.UDPAddr, clientAddr *net.UDPAddr) *udpClient {
@@ -515,7 +582,8 @@ func (r *udpRunner) getClient(key string, targetAddr *net.UDPAddr, clientAddr *n
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		buf := make([]byte, 65535)
+		buf := getCopyBuf()
+		defer putCopyBuf(buf)
 		for {
 			_ = upstream.SetReadDeadline(time.Now().Add(1 * time.Second))
 			n, err := upstream.Read(buf)
