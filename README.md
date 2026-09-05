@@ -1,3 +1,5 @@
+> **Status:** Archived — no longer maintained, kept for reference.
+
 # Porter
 
 Porter is a small TCP/UDP tunnel (port forwarder) with a built-in web UI.
